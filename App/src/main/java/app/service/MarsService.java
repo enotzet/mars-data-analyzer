@@ -1,34 +1,88 @@
 package app.service;
 
-import app.dto.*;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import app.dto.AnalysisResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.ai.chat.ChatClient;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.SystemPromptTemplate;
+import org.springframework.ai.document.Document;
+import org.springframework.ai.chat.messages.Media;
+import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
+import org.springframework.util.MimeTypeUtils;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 public class MarsService {
 
     private final RestTemplate restTemplate;
+    private final ChatClient chatClient;
+    private final VectorStore vectorStore;
+    private final ObjectMapper objectMapper;
 
-    // injecting from application.properties
-    @Value("${openai.api.key}")
-    private String openAiKey;
-
-    public MarsService(RestTemplate restTemplate) {
+    public MarsService(RestTemplate restTemplate, ChatClient chatClient, VectorStore vectorStore) {
         this.restTemplate = restTemplate;
+        this.chatClient = chatClient;
+        this.vectorStore = vectorStore;
+        this.objectMapper = new ObjectMapper();
     }
 
-    public AnalysisResult analyzeMarsData() {
-        String nasaData = fetchNasaData();
+    public String ingestAndAnalyzeImages() {
+        String nasaJson = fetchNasaData();
+        List<String> imageUrls = extractImageUrls(nasaJson);
 
-        String gptAnalysis = analyzeWithGpt(nasaData);
+        int count = 0;
+        for (String imageUrl : imageUrls) {
+            try {
+                var userMessage = new UserMessage("Describe this image in detail regarding geological features.",
+                        List.of(new Media(MimeTypeUtils.IMAGE_JPEG, new UrlResource(imageUrl))));
 
-        return new AnalysisResult(nasaData, gptAnalysis);
+                String description = chatClient.call(new Prompt(userMessage)).getResult().getOutput().getContent();
+
+
+                Document document = new Document(description, Map.of("url", imageUrl, "source", "nasa"));
+                vectorStore.add(List.of(document));
+                count++;
+            } catch (Exception e) {
+                System.err.println("Error processing image: " + imageUrl + " -> " + e.getMessage());
+            }
+        }
+        return "Processed and saved " + count + " images to Vector Database.";
     }
+
+    public String askQuestion(String userQuery) {
+        List<Document> similarDocuments = vectorStore.similaritySearch(userQuery);
+
+        String context = similarDocuments.stream()
+                .map(d -> "Description: " + d.getContent() + "\nImage URL: " + d.getMetadata().get("url"))
+                .collect(Collectors.joining("\n---\n"));
+
+        String systemText = """
+                You are a Mars expert. Use the provided Context to answer the user question.
+                If the answer contains a reference to an image, include the Image URL in your answer.
+                
+                Context:
+                {context}
+                """;
+
+        SystemPromptTemplate systemPromptTemplate = new SystemPromptTemplate(systemText);
+        Prompt prompt = systemPromptTemplate.create(Map.of("context", context));
+
+
+        var finalPrompt = new Prompt(List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)));
+
+        return chatClient.call(finalPrompt).getResult().getOutput().getContent();
+    }
+
 
     private String fetchNasaData() {
         String url = "https://pds-imaging.jpl.nasa.gov/solr/pds_archives/search";
@@ -41,40 +95,22 @@ public class MarsService {
                 .queryParam("target", "Mars")
                 .queryParam("rows", "3")
                 .queryParam("wt", "json");
-
-        String finalUrl = builder.toUriString();
-
-        return restTemplate.getForObject(finalUrl, String.class);
+        return restTemplate.getForObject(builder.toUriString(), String.class);
     }
 
-    private String analyzeWithGpt(String data) {
-        String url = "https://api.openai.com/v1/chat/completions";
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(openAiKey);
-
-        if (data.length() > 5000) {
-            data = data.substring(0, 5000) + "... [truncated]";
-        }
-
-        var systemMsg = new GptRequest.Message("system",
-                "You are a planetary science assistant. Analyze this NASA JSON data.");
-        var userMsg = new GptRequest.Message("user", "Data: " + data);
-
-        var requestBody = new GptRequest("gpt-4o-mini", List.of(systemMsg, userMsg));
-
-        HttpEntity<GptRequest> entity = new HttpEntity<>(requestBody, headers);
-
+    private List<String> extractImageUrls(String json) {
+        List<String> urls = new ArrayList<>();
         try {
-            ResponseEntity<GptResponse> response = restTemplate.postForEntity(url, entity, GptResponse.class);
-
-            if (response.getBody() != null && !response.getBody().choices().isEmpty()) {
-                return response.getBody().choices().get(0).message().content();
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode docs = root.path("response").path("docs");
+            if (docs.isArray()) {
+                for (JsonNode doc : docs) {
+                    if (doc.has("ATLAS_THUMBNAIL_URL")) {
+                        urls.add(doc.get("ATLAS_THUMBNAIL_URL").asText());
+                    }
+                }
             }
-        } catch (Exception e) {
-            return "Error analyzing data: " + e.getMessage();
-        }
-        return "No analysis returned.";
+        } catch (Exception e) { e.printStackTrace(); }
+        return urls;
     }
 }

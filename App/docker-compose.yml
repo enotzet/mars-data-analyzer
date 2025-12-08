@@ -7,6 +7,9 @@ services:
       - "8080:8080"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/marsdb
+      - SPRING_DATASOURCE_USERNAME=mars
+      - SPRING_DATASOURCE_PASSWORD=marspass
     networks:
       - mars-network
 
@@ -16,6 +19,17 @@ services:
       - "3000:80"
     depends_on:
       - backend
+    networks:
+      - mars-network
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5422:5432"
+    environment:
+      - POSTGRES_USER=mars
+      - POSTGRES_PASSWORD=marspass
+      - POSTGRES_DB=marsdb
     networks:
       - mars-network
 

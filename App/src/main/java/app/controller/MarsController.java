@@ -1,11 +1,9 @@
 package app.controller;
 
-
-import app.dto.AnalysisResult;
 import app.service.MarsService;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/mars")
@@ -17,8 +15,15 @@ public class MarsController {
         this.marsService = marsService;
     }
 
-    @GetMapping("/analyze")
-    public AnalysisResult analyze() {
-        return marsService.analyzeMarsData();
+    @PostMapping("/ingest")
+    public String ingest() {
+        return marsService.ingestAndAnalyzeImages();
+    }
+
+    @PostMapping("/chat")
+    public Map<String, String> chat(@RequestBody Map<String, String> payload) {
+        String question = payload.get("question");
+        String answer = marsService.askQuestion(question);
+        return Map.of("answer", answer);
     }
 }
