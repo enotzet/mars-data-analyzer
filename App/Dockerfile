@@ -1,7 +1,9 @@
-FROM gradle:8.14-jdk21-alpine AS build
+FROM gradle:8.7-jdk21-alpine AS build
 WORKDIR /home/gradle/src
+
 COPY --chown=gradle:gradle . .
-RUN gradle build --no-daemon -x test
+
+RUN gradle clean build --no-daemon -x test
 
 FROM eclipse-temurin:21-jdk
 WORKDIR /app

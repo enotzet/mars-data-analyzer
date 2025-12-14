@@ -10,6 +10,8 @@ services:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/marsdb
       - SPRING_DATASOURCE_USERNAME=mars
       - SPRING_DATASOURCE_PASSWORD=marspass
+    depends_on:
+        - postgres
     networks:
       - mars-network
 
