@@ -1,14 +1,14 @@
 package app.service;
 
-import app.dto.AnalysisResult;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.ai.chat.ChatClient;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.messages.Media;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.chat.messages.Media;
+import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
@@ -41,30 +41,53 @@ public class MarsService {
         List<String> imageUrls = extractImageUrls(nasaJson);
 
         int count = 0;
+        int skipped = 0;
+
+        System.out.println("Found " + imageUrls.size() + " images. Starting processing...");
+
         for (String imageUrl : imageUrls) {
             try {
-                var userMessage = new UserMessage("Describe this image in detail regarding geological features.",
+
+                boolean exists = checkImageExists(imageUrl);
+
+                if (exists) {
+                    System.out.println("Image already exists in DB, skipping: " + imageUrl);
+                    skipped++;
+                    continue;
+                }
+
+                System.out.println("Analyzing new image: " + imageUrl);
+
+
+                var userMessage = new UserMessage("Describe this image by its URL, in +é words regarding geological features.",
                         List.of(new Media(MimeTypeUtils.IMAGE_JPEG, new UrlResource(imageUrl))));
 
                 String description = chatClient.call(new Prompt(userMessage)).getResult().getOutput().getContent();
 
-
                 Document document = new Document(description, Map.of("url", imageUrl, "source", "nasa"));
                 vectorStore.add(List.of(document));
+
                 count++;
+
             } catch (Exception e) {
                 System.err.println("Error processing image: " + imageUrl + " -> " + e.getMessage());
             }
         }
-        return "Processed and saved " + count + " images to Vector Database.";
+        return "Ingestion complete. Analyzed: " + count + ", Skipped (already existed): " + skipped;
     }
 
     public String askQuestion(String userQuery) {
-        List<Document> similarDocuments = vectorStore.similaritySearch(userQuery);
+        List<Document> similarDocuments = vectorStore.similaritySearch(
+                SearchRequest.query(userQuery).withTopK(3) // Берем топ-3 похожих
+        );
 
         String context = similarDocuments.stream()
                 .map(d -> "Description: " + d.getContent() + "\nImage URL: " + d.getMetadata().get("url"))
                 .collect(Collectors.joining("\n---\n"));
+
+        if (context.isEmpty()) {
+            return "I haven't analyzed any images yet, or nothing relevant was found.";
+        }
 
         String systemText = """
                 You are a Mars expert. Use the provided Context to answer the user question.
@@ -77,12 +100,28 @@ public class MarsService {
         SystemPromptTemplate systemPromptTemplate = new SystemPromptTemplate(systemText);
         Prompt prompt = systemPromptTemplate.create(Map.of("context", context));
 
-
         var finalPrompt = new Prompt(List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)));
 
         return chatClient.call(finalPrompt).getResult().getOutput().getContent();
     }
 
+
+    private boolean checkImageExists(String imageUrl) {
+        try {
+
+            String filterExpression = "url == '" + imageUrl + "'";
+
+            List<Document> existing = vectorStore.similaritySearch(
+                    SearchRequest.defaults()
+                            .withQuery("check")
+                            .withTopK(1)
+                            .withFilterExpression(filterExpression)
+            );
+            return !existing.isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     private String fetchNasaData() {
         String url = "https://pds-imaging.jpl.nasa.gov/solr/pds_archives/search";
@@ -93,7 +132,7 @@ public class MarsService {
                 .path("/solr/pds_archives/search")
                 .queryParam("mission", "Mars Science Laboratory")
                 .queryParam("target", "Mars")
-                .queryParam("rows", "3")
+                .queryParam("rows", "5") // limit of rows
                 .queryParam("wt", "json");
         return restTemplate.getForObject(builder.toUriString(), String.class);
     }
