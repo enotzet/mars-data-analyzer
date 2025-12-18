@@ -43,7 +43,6 @@ public class MarsService {
     }
 
     public String ingestAndAnalyzeImages() {
-        log.info("--- Starting Ingestion (Spring AI 1.0.0) ---");
         String nasaJson = fetchNasaData();
         List<String> imageUrls = extractImageUrls(nasaJson);
 
@@ -71,12 +70,11 @@ public class MarsService {
 
                 log.info( "Analyzing ({} bytes)...", imageBytes.length );
 
-                var userMessage = new UserMessage("Describe this image in detail regarding geological features. Be scientific.",
+                var userMessage = new UserMessage("You are an astronomical expert with extensive knowledge of Mars; describe in detail everything you see in this image of the Martian surface.",
                         List.of(new Media(MimeTypeUtils.IMAGE_JPEG, new ByteArrayResource(imageBytes))));
 
                 Prompt prompt = new Prompt(userMessage,
                         OpenAiChatOptions.builder()
-                                .withModel("gpt-4o")
                                 .withMaxTokens(500)
                                 .build());
 
@@ -115,7 +113,7 @@ public class MarsService {
         Prompt prompt = systemPromptTemplate.create(Map.of("context", context));
 
         var finalPrompt = new Prompt(List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)),
-                OpenAiChatOptions.builder().withModel("gpt-4o").build());
+                OpenAiChatOptions.builder().build());
 
         return chatModel.call(finalPrompt).getResult().getOutput().getContent();
     }
