@@ -2,7 +2,6 @@ package app.controller;
 
 import app.service.MarsService;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.Map;
 
 @RestController
@@ -21,9 +20,12 @@ public class MarsController {
     }
 
     @PostMapping("/chat")
-    public Map<String, String> chat(@RequestBody Map<String, String> payload) {
-        String question = payload.get("question");
-        String answer = marsService.askQuestion(question);
+    public Map<String, String> chat(@RequestBody Map<String, Object> payload) {
+        String question = (String) payload.get("question");
+        String sessionId = (String) payload.get("sessionId");
+        boolean ragEnabled = (Boolean) payload.get("ragEnabled");
+
+        String answer = marsService.askQuestion(question, sessionId, ragEnabled);
         return Map.of("answer", answer);
     }
 }

@@ -1,5 +1,7 @@
 package app.service;
 
+import app.model.ChatLog;
+import app.repository.ChatLogRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -32,14 +34,16 @@ public class MarsService {
     private final ChatModel chatModel;
     private final VectorStore vectorStore;
     private final ObjectMapper objectMapper;
+    private final ChatLogRepository chatLogRepository;
     static Logger log = LoggerFactory.getLogger( MarsService.class );
 
 
-    public MarsService(RestTemplate restTemplate, ChatModel chatModel, VectorStore vectorStore) {
+    public MarsService(RestTemplate restTemplate, ChatModel chatModel, VectorStore vectorStore, ChatLogRepository chatLogRepository) {
         this.restTemplate = restTemplate;
         this.chatModel = chatModel;
         this.vectorStore = vectorStore;
         this.objectMapper = new ObjectMapper();
+        this.chatLogRepository = chatLogRepository;
     }
 
     public String ingestAndAnalyzeImages() {
@@ -75,7 +79,8 @@ public class MarsService {
 
                 Prompt prompt = new Prompt(userMessage,
                         OpenAiChatOptions.builder()
-                                .withMaxTokens(500)
+                                .withTemperature( 1.0F )
+                                .withMaxTokens( 1500 )
                                 .build());
 
                 String description = chatModel.call(prompt).getResult().getOutput().getContent();
@@ -92,30 +97,45 @@ public class MarsService {
         return "Ingestion complete. Analyzed: " + count;
     }
 
-    public String askQuestion(String userQuery) {
-        List<Document> similarDocuments = vectorStore.similaritySearch(
-                SearchRequest.query(userQuery).withTopK(3)
-        );
+    public String askQuestion(String userQuery, String sessionId, boolean ragEnabled) {
+        String systemText;
+        String context = "";
 
-        String context = similarDocuments.stream()
-                .map(d -> "Description: " + d.getContent() + "\nImage URL: " + d.getMetadata().get("url"))
-                .collect(Collectors.joining("\n---\n"));
+        if (ragEnabled) {
+            List<Document> similarDocuments = vectorStore.similaritySearch(
+                    SearchRequest.query(userQuery).withTopK(3)
+            );
 
-        if (context.isEmpty()) return "No data found. Ingest images first.";
+            context = similarDocuments.stream()
+                    .map(d -> "Description: " + d.getContent() + "\nImage URL: " + d.getMetadata().get("url"))
+                    .collect(Collectors.joining("\n---\n"));
+        }
 
-        String systemText = """
+        if (ragEnabled && !context.isEmpty()) {
+            systemText = """
                 You are a Mars expert. Use the provided Context to answer the user question.
                 Context:
                 {context}
                 """;
+        } else {
+            systemText = "You are a Mars expert. Answer the user's questions based on your general knowledge.";
+        }
 
         SystemPromptTemplate systemPromptTemplate = new SystemPromptTemplate(systemText);
         Prompt prompt = systemPromptTemplate.create(Map.of("context", context));
 
         var finalPrompt = new Prompt(List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)),
-                OpenAiChatOptions.builder().build());
+                OpenAiChatOptions.builder().withTemperature( 1.0F ).build());
 
-        return chatModel.call(finalPrompt).getResult().getOutput().getContent();
+        String answer = chatModel.call(finalPrompt).getResult().getOutput().getContent();
+
+        try {
+            chatLogRepository.save(new ChatLog(sessionId, ragEnabled, userQuery, answer));
+        } catch (Exception e) {
+            log.error("Failed to save log to Elasticsearch: {}", e.getMessage());
+        }
+
+        return answer;
     }
 
     private boolean checkImageExists(String imageUrl) {
