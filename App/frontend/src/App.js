@@ -205,7 +205,9 @@ export default function App() {
                 <div style={S.chatScroll}>
                     {messages.length === 0 && (
                         <div style={S.empty}>
-                            <div style={S.emptyIcon}>{Icon.rocket}</div>
+                            <div style={S.emptyIcon}>
+                                <svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><path d="M8 1c0 0-5 3-5 9l2 3 3-2 3 2 2-3c0-6-5-9-5-9z"/><circle cx="8" cy="7" r="1.2"/></svg>
+                            </div>
                             <h2 style={{ fontSize: 22, fontWeight: 600, margin: '16px 0 8px' }}>Mars Data Analyzer</h2>
                             <p style={{ color: '#888', maxWidth: 420, lineHeight: 1.5, fontSize: 14 }}>
                                 Ask questions about the Martian surface, geology, climate, and rover observations.
@@ -483,7 +485,7 @@ const S = {
     /* chat */
     chatScroll:{ flex: 1, overflowY: 'auto', paddingBottom: 140 },
     empty:     { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', textAlign: 'center', padding: 24, color: '#aaa' },
-    emptyIcon: { width: 52, height: 52, borderRadius: 14, background: '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', transform: 'scale(2)' },
+    emptyIcon: { width: 64, height: 64, borderRadius: 16, background: '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#888', marginBottom: 4 },
 
     msgRow:    { padding: '24px 0' },
     msgInner:  { maxWidth: 768, margin: '0 auto', padding: '0 24px', display: 'flex', gap: 16 },
