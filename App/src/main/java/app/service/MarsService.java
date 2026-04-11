@@ -1,179 +1,121 @@
 package app.service;
 
+import app.dto.ChatResponse;
 import app.model.ChatLog;
-import app.repository.ChatLogRepository;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import app.model.PromptTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.model.Media; // Media переехал сюда
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.core.io.ByteArrayResource;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.stereotype.Service;
-import org.springframework.util.MimeTypeUtils;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 
-import java.net.URI;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
 public class MarsService {
 
-    private final RestTemplate restTemplate;
+    private static final Logger log = LoggerFactory.getLogger(MarsService.class);
+
     private final ChatModel chatModel;
-    private final VectorStore vectorStore;
-    private final ObjectMapper objectMapper;
-    private final ChatLogRepository chatLogRepository;
-    static Logger log = LoggerFactory.getLogger( MarsService.class );
+    private final RetrievalService retrievalService;
+    private final PromptService promptService;
+    private final ProvenanceService provenanceService;
+    private final UserService userService;
 
+    private static final String MODEL_NAME = "gpt-4o-mini";
+    private static final double TEMPERATURE = 0.7;
+    private static final int MAX_TOKENS = 1500;
 
-    public MarsService(RestTemplate restTemplate, ChatModel chatModel, VectorStore vectorStore, ChatLogRepository chatLogRepository) {
-        this.restTemplate = restTemplate;
+    public MarsService(
+            ChatModel chatModel,
+            RetrievalService retrievalService,
+            PromptService promptService,
+            ProvenanceService provenanceService,
+            UserService userService) {
         this.chatModel = chatModel;
-        this.vectorStore = vectorStore;
-        this.objectMapper = new ObjectMapper();
-        this.chatLogRepository = chatLogRepository;
+        this.retrievalService = retrievalService;
+        this.promptService = promptService;
+        this.provenanceService = provenanceService;
+        this.userService = userService;
     }
 
-    public String ingestAndAnalyzeImages() {
-        String nasaJson = fetchNasaData();
-        List<String> imageUrls = extractImageUrls(nasaJson);
+    public ChatResponse askQuestionWithEvidence(String userQuery, String sessionId, boolean ragEnabled, String userId) {
+        long startTime = System.currentTimeMillis();
+        String jobId = UUID.randomUUID().toString();
 
-        if (imageUrls.isEmpty()) return "No images found.";
-
-        int count = 0;
-
-        for (String imageUrl : imageUrls) {
-            if (count >= 3) break;
-
-            try {
-                if (checkImageExists(imageUrl)) {
-                    log.info( "Skipping existing: {}", imageUrl );
-                    continue;
-                }
-
-                log.info( "Downloading: {}", imageUrl );
-                URI uri = URI.create(imageUrl.replace(" ", "%20"));
-                byte[] imageBytes = restTemplate.getForObject(uri, byte[].class);
-
-                if (imageBytes == null || imageBytes.length < 2048) {
-                    log.warn("Skipping small file.");
-                    continue;
-                }
-
-                log.info( "Analyzing ({} bytes)...", imageBytes.length );
-
-                var userMessage = new UserMessage("You are an astronomical expert with extensive knowledge of Mars; describe in detail everything you see in this image of the Martian surface.",
-                        List.of(new Media(MimeTypeUtils.IMAGE_JPEG, new ByteArrayResource(imageBytes))));
-
-                Prompt prompt = new Prompt(userMessage,
-                        OpenAiChatOptions.builder()
-                                .withTemperature( 1.0F )
-                                .withMaxTokens( 1500 )
-                                .build());
-
-                String description = chatModel.call(prompt).getResult().getOutput().getContent();
-                System.out.println("Analysis: " + description.substring(0, Math.min(50, description.length())) + "...");
-
-                Document document = new Document(description, Map.of("url", imageUrl, "source", "nasa-api"));
-                vectorStore.add(List.of(document));
-                count++;
-
-            } catch (Exception e) {
-                log.error( "Error: {}", e.getMessage() );
-            }
+        // Rate limit check
+        if (!userService.checkAndRecordUsage(userId != null ? userId : "default", "/api/mars/chat")) {
+            return new ChatResponse("Daily API limit reached. Please try again tomorrow.", jobId, null, List.of());
         }
-        return "Ingestion complete. Analyzed: " + count;
-    }
 
-    public String askQuestion(String userQuery, String sessionId, boolean ragEnabled) {
         String systemText;
         String context = "";
+        List<ChatResponse.SourceEvidence> sourceEvidences = new ArrayList<>();
+        List<ChatLog.SourceReference> sourceRefs = new ArrayList<>();
+        PromptTemplate activePrompt;
 
         if (ragEnabled) {
-            List<Document> similarDocuments = vectorStore.similaritySearch(
-                    SearchRequest.query(userQuery).withTopK(3)
-            );
+            List<RetrievalService.ScoredDocument> scoredDocs = retrievalService.hybridSearch(userQuery, 3);
 
-            context = similarDocuments.stream()
-                    .map(d -> "Description: " + d.getContent() + "\nImage URL: " + d.getMetadata().get("url"))
-                    .collect(Collectors.joining("\n---\n"));
+            if (!scoredDocs.isEmpty()) {
+                StringBuilder contextBuilder = new StringBuilder();
+                for (int i = 0; i < scoredDocs.size(); i++) {
+                    var sd = scoredDocs.get(i);
+                    var doc = sd.document();
+                    String url = doc.getMetadata().getOrDefault("url", "").toString();
+                    String source = doc.getMetadata().getOrDefault("source", "unknown").toString();
+                    String snippet = doc.getContent().substring(0, Math.min(300, doc.getContent().length()));
+
+                    contextBuilder.append("[Source ").append(i + 1).append("] ")
+                            .append("Description: ").append(doc.getContent())
+                            .append("\nImage URL: ").append(url)
+                            .append("\n---\n");
+
+                    sourceEvidences.add(new ChatResponse.SourceEvidence(url, source, snippet, sd.score()));
+                    sourceRefs.add(new ChatLog.SourceReference(url, source, snippet, sd.score()));
+                }
+                context = contextBuilder.toString();
+            }
         }
 
         if (ragEnabled && !context.isEmpty()) {
-            systemText = """
-                You are a Mars expert. Use the provided Context to answer the user question.
-                Context:
-                {context}
-                """;
+            activePrompt = promptService.getActivePrompt(PromptService.RAG_CHAT);
         } else {
-            systemText = "You are a Mars expert. Answer the user's questions based on your general knowledge.";
+            activePrompt = promptService.getActivePrompt(PromptService.GENERAL_CHAT);
         }
 
+        systemText = activePrompt.getTemplateText();
         SystemPromptTemplate systemPromptTemplate = new SystemPromptTemplate(systemText);
         Prompt prompt = systemPromptTemplate.create(Map.of("context", context));
 
-        var finalPrompt = new Prompt(List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)),
-                OpenAiChatOptions.builder().withTemperature( 1.0F ).build());
+        var finalPrompt = new Prompt(
+                List.of(prompt.getInstructions().get(0), new UserMessage(userQuery)),
+                OpenAiChatOptions.builder()
+                        .withTemperature((float) TEMPERATURE)
+                        .withMaxTokens(MAX_TOKENS)
+                        .build());
 
         String answer = chatModel.call(finalPrompt).getResult().getOutput().getContent();
+        long latencyMs = System.currentTimeMillis() - startTime;
 
-        try {
-            chatLogRepository.save(new ChatLog(sessionId, ragEnabled, userQuery, answer));
-        } catch (Exception e) {
-            log.error("Failed to save log to Elasticsearch: {}", e.getMessage());
-        }
+        // Log provenance to Elasticsearch
+        provenanceService.logInteraction(
+                jobId, sessionId, userId, ragEnabled,
+                userQuery, answer, context,
+                activePrompt.getId(), MODEL_NAME, TEMPERATURE, MAX_TOKENS,
+                latencyMs, sourceRefs
+        );
 
-        return answer;
+        return new ChatResponse(answer, jobId, activePrompt.getId(), sourceEvidences);
     }
 
-    private boolean checkImageExists(String imageUrl) {
-        try {
-            String safeUrl = imageUrl.replace("'", "\\'");
-            return !vectorStore.similaritySearch(
-                    SearchRequest.defaults()
-                            .withQuery("check").withTopK(1)
-                            .withFilterExpression("url == '" + safeUrl + "'")
-            ).isEmpty();
-        } catch (Exception e) { return false; }
-    }
-
-    private String fetchNasaData() {
-        String url = "https://images-api.nasa.gov/search";
-        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(url)
-                .queryParam("q", "Mars Curiosity Surface")
-                .queryParam("media_type", "image")
-                .queryParam("year_start", "2016")
-                .queryParam("page", "1");
-        return restTemplate.getForObject(builder.build().toUri(), String.class);
-    }
-
-    private List<String> extractImageUrls(String json) {
-        List<String> urls = new ArrayList<>();
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            JsonNode items = root.path("collection").path("items");
-            if (items.isArray()) {
-                for (JsonNode item : items) {
-                    JsonNode links = item.path("links");
-                    if (links.isArray() && !links.isEmpty()) {
-                        String href = links.get(0).path("href").asText();
-                        if (href != null && !href.contains(".tif")) urls.add(href);
-                    }
-                }
-            }
-        } catch (Exception e) { }
-        return urls;
+    /** Simplified method for backward compatibility and benchmarking. */
+    public String askQuestion(String userQuery, String sessionId, boolean ragEnabled) {
+        ChatResponse response = askQuestionWithEvidence(userQuery, sessionId, ragEnabled, "default");
+        return response.answer();
     }
 }
