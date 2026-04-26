@@ -1,26 +1,26 @@
 package app.controller;
 
-import app.dto.ChatRequest;
-import app.dto.ChatResponse;
 import app.dto.JobStatusDto;
 import app.model.IngestionJob;
 import app.service.IngestionService;
-import app.service.MarsService;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api/mars")
-public class MarsController {
+public class IngestionJobController {
 
-    private final MarsService marsService;
     private final IngestionService ingestionService;
 
-    public MarsController(MarsService marsService, IngestionService ingestionService) {
-        this.marsService = marsService;
+    public IngestionJobController(IngestionService ingestionService) {
         this.ingestionService = ingestionService;
     }
 
@@ -47,16 +47,6 @@ public class MarsController {
         return ingestionService.getJob(jobId)
                 .map(j -> ResponseEntity.ok(toDto(j)))
                 .orElse(ResponseEntity.notFound().build());
-    }
-
-    @PostMapping("/chat")
-    public ChatResponse chat(@RequestBody ChatRequest request) {
-        return marsService.askQuestionWithEvidence(
-                request.question(),
-                request.sessionId(),
-                request.ragEnabled(),
-                request.userId()
-        );
     }
 
     private JobStatusDto toDto(IngestionJob job) {
