@@ -9,6 +9,7 @@ public interface PromptService {
     String IMAGE_ANALYSIS = "image-analysis";
     String RAG_CHAT = "rag-chat";
     String GENERAL_CHAT = "general-chat";
+    String JUDGE = "judge";
 
     PromptTemplate getActivePrompt(String name);
 

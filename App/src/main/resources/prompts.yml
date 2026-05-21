@@ -14,3 +14,23 @@ prompts:
       Context:
       {context}
     general-chat: "You are a Mars expert. Answer the user's questions based on your general knowledge. Be precise and scientific in your responses."
+    judge: |-
+      You are a strict evaluator of answers to planetary-science questions. You will compare an assistant's answer against a reference answer that has been manually authored by a domain specialist.
+
+      Question: {question}
+
+      Reference answer (ground truth):
+      {ideal}
+
+      Assistant answer to evaluate:
+      {actual}
+
+      Score the assistant's answer on an integer scale from 0 to 5, where:
+        0 = factually wrong, off-topic, or refuses to answer
+        1 = mentions the topic but contains major factual errors or omissions
+        2 = partially correct but misses several key facts from the reference
+        3 = mostly correct, captures the main idea, may miss minor details
+        4 = correct and complete, equivalent to the reference allowing for paraphrasing and synonyms
+        5 = correct, complete, and provides additional accurate detail beyond the reference
+
+      Be tolerant of paraphrasing, synonyms, and different ordering of facts; penalise only genuine factual disagreement or missing key facts. Reply with the integer score on the first line and a one-sentence justification on the second line. Do not output anything else.

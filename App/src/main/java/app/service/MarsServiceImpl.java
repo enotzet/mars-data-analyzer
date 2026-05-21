@@ -119,4 +119,61 @@ public class MarsServiceImpl implements MarsService {
         ChatResponse response = askQuestionWithEvidence(userQuery, sessionId, ragEnabled, "default");
         return response.answer();
     }
+
+    @Override
+    public BenchmarkAnswer askInMode(String userQuery, BenchmarkMode mode) {
+        // Resolve retrieval first (if any) so that we can capture sourcesUsed and avgRetrievalScore.
+        String contextBlock = "";
+        int sourcesUsed = 0;
+        double avgScore = 0.0;
+
+        if (mode == BenchmarkMode.RAG_BASELINE || mode == BenchmarkMode.RAG_RERANKED) {
+            List<RetrievalService.ScoredDocument> docs = (mode == BenchmarkMode.RAG_RERANKED)
+                    ? retrievalService.hybridSearch(userQuery, 3)
+                    : retrievalService.baselineSearch(userQuery, 3);
+            sourcesUsed = docs.size();
+            if (!docs.isEmpty()) {
+                StringBuilder sb = new StringBuilder();
+                double scoreSum = 0.0;
+                for (int i = 0; i < docs.size(); i++) {
+                    var sd = docs.get(i);
+                    String url = sd.document().getMetadata().getOrDefault("url", "").toString();
+                    sb.append("[Source ").append(i + 1).append("] ")
+                      .append("Description: ").append(sd.document().getContent())
+                      .append("\nImage URL: ").append(url)
+                      .append("\n---\n");
+                    scoreSum += sd.score();
+                }
+                contextBlock = sb.toString();
+                avgScore = scoreSum / docs.size();
+            }
+        }
+
+        // Pick prompt strategy
+        Prompt prompt;
+        var chatOptions = OpenAiChatOptions.builder()
+                .withTemperature((float) TEMPERATURE)
+                .withMaxTokens(MAX_TOKENS)
+                .build();
+
+        if (mode == BenchmarkMode.ZERO_SHOT) {
+            // No system prompt, just the user query
+            prompt = new Prompt(List.of(new UserMessage(userQuery)), chatOptions);
+        } else if (mode == BenchmarkMode.SYSTEM_PROMPT) {
+            // general-chat system prompt, no context
+            String text = promptService.getActivePrompt(PromptService.GENERAL_CHAT).getTemplateText();
+            SystemPromptTemplate systemTpl = new SystemPromptTemplate(text);
+            Prompt sysOnly = systemTpl.create(Map.of());
+            prompt = new Prompt(List.of(sysOnly.getInstructions().get(0), new UserMessage(userQuery)), chatOptions);
+        } else {
+            // RAG_BASELINE or RAG_RERANKED — both use rag-chat prompt with context
+            String text = promptService.getActivePrompt(PromptService.RAG_CHAT).getTemplateText();
+            SystemPromptTemplate systemTpl = new SystemPromptTemplate(text);
+            Prompt sysWithCtx = systemTpl.create(Map.of("context", contextBlock));
+            prompt = new Prompt(List.of(sysWithCtx.getInstructions().get(0), new UserMessage(userQuery)), chatOptions);
+        }
+
+        String answer = chatModel.call(prompt).getResult().getOutput().getContent();
+        return new BenchmarkAnswer(answer, sourcesUsed, avgScore);
+    }
 }

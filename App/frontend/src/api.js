@@ -27,8 +27,8 @@ export async function retryIngest(jobId) {
     return fetch(`${API}/mars/ingest/${jobId}/retry`, { method: 'POST' });
 }
 
-export async function runBenchmark({ mode, sessionId }) {
-    const r = await fetch(`${API}/benchmark/run?mode=${mode}&sessionId=${sessionId}`, { method: 'POST' });
+export async function runBenchmark({ repeats = 5 } = {}) {
+    const r = await fetch(`${API}/benchmark/run?repeats=${repeats}`, { method: 'POST' });
     return r.json();
 }
 
