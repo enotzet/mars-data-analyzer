@@ -16,13 +16,16 @@ public class ApiUsageRecord {
     private Instant timestamp;
 
     public ApiUsageRecord() {
-        this.timestamp = Instant.now();
     }
 
     public ApiUsageRecord(String userId, String endpoint) {
-        this();
         this.userId = userId;
         this.endpoint = endpoint;
+    }
+
+    @PrePersist
+    void onPersist() {
+        this.timestamp = Instant.now();
     }
 
     public String getId() { return id; }

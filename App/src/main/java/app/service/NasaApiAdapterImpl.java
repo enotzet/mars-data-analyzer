@@ -9,12 +9,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
-public class NasaApiService {
+public class NasaApiAdapterImpl implements NasaApiAdapter {
 
-    private static final Logger log = LoggerFactory.getLogger(NasaApiService.class);
+    private static final Logger log = LoggerFactory.getLogger(NasaApiAdapterImpl.class);
 
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -22,11 +23,11 @@ public class NasaApiService {
     @Value("${nasa.api.key:DEMO_KEY}")
     private String nasaApiKey;
 
-    public NasaApiService(RestTemplate restTemplate) {
+    public NasaApiAdapterImpl(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
 
-    /** Fetch image URLs from NASA Image and Video Library. */
+    @Override
     public List<ImageRecord> fetchNasaImageLibrary() {
         String url = UriComponentsBuilder.fromHttpUrl("https://images-api.nasa.gov/search")
                 .queryParam("q", "Mars Curiosity Surface")
@@ -49,7 +50,11 @@ public class NasaApiService {
                     if (links.isArray() && !links.isEmpty()) {
                         String href = links.get(0).path("href").asText();
                         if (href != null && !href.contains(".tif")) {
-                            records.add(new ImageRecord(href, "nasa-image-library", title, description, nasaId));
+                            // Library returns ~thumb/~small in `links`. Upgrade to ~orig
+                            // so the vision model has enough pixels to avoid spurious refusals.
+                            String highRes = href.replace("~thumb.jpg", "~orig.jpg")
+                                                 .replace("~small.jpg", "~orig.jpg");
+                            records.add(new ImageRecord(highRes, "nasa-image-library", title, description, nasaId));
                         }
                     }
                 }
@@ -60,7 +65,7 @@ public class NasaApiService {
         return records;
     }
 
-    /** Fetch Mars Rover photos from the Mars Rover Photos API. */
+    @Override
     public List<ImageRecord> fetchMarsRoverPhotos() {
         String url = UriComponentsBuilder.fromHttpUrl("https://api.nasa.gov/mars-photos/api/v1/rovers/curiosity/photos")
                 .queryParam("sol", "1000")
@@ -92,22 +97,23 @@ public class NasaApiService {
         return records;
     }
 
-    /** Download image bytes from a URL. Returns null on failure. */
+    @Override
     public byte[] downloadImage(String imageUrl) {
         try {
             var uri = java.net.URI.create(imageUrl.replace(" ", "%20"));
             return restTemplate.getForObject(uri, byte[].class);
         } catch (Exception e) {
+            // Some NASA assets publish ~orig as .png only — retry with .png if .jpg 404s.
+            if (imageUrl.endsWith("~orig.jpg")) {
+                String pngUrl = imageUrl.substring(0, imageUrl.length() - 4) + ".png";
+                try {
+                    var uri = java.net.URI.create(pngUrl.replace(" ", "%20"));
+                    log.info("Falling back to PNG variant: {}", pngUrl);
+                    return restTemplate.getForObject(uri, byte[].class);
+                } catch (Exception ignored) { }
+            }
             log.error("Failed to download image {}: {}", imageUrl, e.getMessage());
             return null;
         }
     }
-
-    public record ImageRecord(
-        String imageUrl,
-        String source,
-        String title,
-        String description,
-        String externalId
-    ) {}
 }
